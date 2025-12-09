@@ -5,6 +5,8 @@ void main() async {
   await limitFunctionExample();
   await dynamicConcurrencyExample();
   await queueStrategyExamples();
+  await extensionsExample();
+  await isolateExample();
 }
 
 /// Basic usage example
@@ -180,4 +182,59 @@ Future<void> _demonstratePriority() async {
 
   await Future.wait(futures);
   print('Priority demonstration completed\n');
+}
+
+/// Example demonstrating FLimitExtensions
+Future<void> extensionsExample() async {
+  print('=== FLimitExtensions Example ===');
+
+  final limit = fLimit(2);
+
+  // Use the map extension to process items
+  final items = [1, 2, 3, 4, 5];
+  final results = await limit.map(items, (item) async {
+    print('Processing item $item');
+    await Future.delayed(Duration(milliseconds: 100));
+    return item * 2;
+  });
+
+  print('Map results: $results');
+
+  // Use the onIdle extension to wait for all tasks to complete
+  print('Waiting for all tasks to complete...');
+  await limit.onIdle;
+  print('All tasks completed successfully');
+  print('');
+}
+
+/// Example demonstrating FLimitIsolate
+Future<void> isolateExample() async {
+  print('=== FLimitIsolate Example ===');
+
+  final limit = fLimit(2);
+
+  // Simple computation to run in isolate
+  int fibonacci(int n) {
+    if (n <= 1) return n;
+    return fibonacci(n - 1) + fibonacci(n - 2);
+  }
+
+  // Use isolate extension to run computation in separate isolate
+  final futures = <Future<int>>[];
+  for (int i = 30; i < 35; i++) {
+    futures.add(limit.isolate(() async {
+      print('Computing fibonacci($i) in isolate');
+      final result = fibonacci(i);
+      print('fibonacci($i) = $result');
+      return result;
+    }));
+  }
+
+  final results = await Future.wait(futures);
+  print('Fibonacci results: $results');
+  
+  // Wait for all isolate tasks to complete
+  await limit.onIdle;
+  print('All isolate computations completed');
+  print('');
 }

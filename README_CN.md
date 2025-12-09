@@ -220,6 +220,9 @@ void main() async {
 #### 方法
 
 - `call(function, {priority})` - 🚀 使用并发限制执行函数
+- `isolate(computation, {priority})` - 🧵 在单独的 isolate 中执行计算
+- `map(items, mapper)` - 🗺️ 并发映射项目
+- `onIdle` - 💤 等待空闲状态
 - `clearQueue()` - 🗑️ 清空所有等待中的操作
 
 ### 🔗 `limitFunction<T>(function, options)`
@@ -256,6 +259,54 @@ try {
 
 final result = await future2; // 这里会成功
 print('✅ 结果：$result');
+```
+
+## 🧵 Isolate 支持 (Dart 2.19+)
+
+你可以使用 `isolate` 在单独的 isolate 中运行计算密集型任务，同时遵守并发限制：
+
+```dart
+final limit = fLimit(2);
+
+// ⚡ 这将在单独的 isolate 中运行！
+final result = await limit.isolate(() {
+  // 🔨 繁重的计算
+  int sum = 0;
+  for (int i = 0; i < 1000000; i++) {
+    sum += i;
+  }
+  return sum;
+});
+
+print('Result: $result');
+```
+
+**注意：** 传递给 `isolate` 的函数必须是静态函数、顶层函数或 [可发送](https://api.dart.dev/stable/dart-isolate/Isolate/run.html) 的闭包（即不捕获任何不可发送的对象）。
+
+## 🛠️ 扩展方法
+
+### `map`
+
+并发处理迭代器中的项目：
+
+```dart
+final limit = fLimit(2);
+final items = [1, 2, 3, 4, 5];
+
+// 使用并发限制映射项目到结果
+final results = await limit.map(items, (item) async {
+  await Future.delayed(Duration(seconds: 1));
+  return item * 2;
+});
+```
+
+### `onIdle`
+
+等待所有任务完成：
+
+```dart
+await limit.onIdle;
+print('所有任务已完成且队列为空');
 ```
 
 ## 🔍 监控和调试

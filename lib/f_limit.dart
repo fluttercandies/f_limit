@@ -5,3 +5,5 @@
 library f_limit;
 
 export 'src/f_limit_base.dart';
+export 'src/f_limit_isolate.dart';
+export 'src/f_limit_extensions.dart';

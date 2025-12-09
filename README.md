@@ -219,6 +219,9 @@ Queue execution strategies:
 #### Methods
 
 - `call(function, {priority})` - 🚀 Execute function with concurrency limit
+- `isolate(computation, {priority})` - 🧵 Execute computation in a separate isolate
+- `map(items, mapper)` - 🗺️ Map items concurrently
+- `onIdle` - 💤 Wait for idle state
 - `clearQueue()` - 🗑️ Clear all pending operations
 
 ### 🔗 `limitFunction<T>(function, options)`
@@ -254,6 +257,54 @@ try {
 
 final result = await future2; // This will succeed
 print('✅ Result: $result');
+```
+
+## 🧵 Isolate Support (Dart 2.19+)
+
+You can run computationally heavy tasks in a separate isolate while respecting the concurrency limit using `isolate`:
+
+```dart
+final limit = fLimit(2);
+
+// ⚡ This will run in a separate isolate!
+final result = await limit.isolate(() {
+  // 🔨 Heavy computation here
+  int sum = 0;
+  for (int i = 0; i < 1000000; i++) {
+    sum += i;
+  }
+  return sum;
+});
+
+print('Result: $result');
+```
+
+**Note:** The function passed to `isolate` must be a static function, a top-level function, or a closure that is [sendable](https://api.dart.dev/stable/dart-isolate/Isolate/run.html) (i.e., it doesn't capture any non-sendable objects).
+
+## 🛠️ Extensions
+
+### `map`
+
+Process items in an iterable concurrently:
+
+```dart
+final limit = fLimit(2);
+final items = [1, 2, 3, 4, 5];
+
+// Map items to results with concurrency limit
+final results = await limit.map(items, (item) async {
+  await Future.delayed(Duration(seconds: 1));
+  return item * 2;
+});
+```
+
+### `onIdle`
+
+Wait for all tasks to complete:
+
+```dart
+await limit.onIdle;
+print('All tasks finished and queue is empty');
 ```
 
 ## 🔍 Monitoring and Debugging
