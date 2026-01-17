@@ -1,6 +1,6 @@
 name: f_limit
-description: A Dart implementation of p-limit for controlling concurrency of async operations.
-version: 1.1.0
+description: A Dart concurrency limiter for controlling async operations.
+version: 1.2.0
 homepage: https://github.com/fluttercandies/f_limit
 repository: https://github.com/fluttercandies/f_limit
 issue_tracker: https://github.com/fluttercandies/f_limit/issues
