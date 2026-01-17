@@ -1,26 +1,97 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:math';
 
-/// A function that takes arguments and returns a Future
+/// A function that takes no arguments and returns a Future
 typedef LimitedFunction<T> = Future<T> Function();
 
 /// Queue strategy for task execution
+///
+/// Determines the order in which queued tasks are executed when concurrency
+/// slots become available.
+///
+/// Example:
+/// ```dart
+/// // Use priority-based execution
+/// final limit = fLimit(2, queueStrategy: QueueStrategy.priority);
+///
+/// limit(() async => print('low'), priority: 1);
+/// limit(() async => print('high'), priority: 10);
+/// // Output: high, low
+/// ```
 enum QueueStrategy {
   /// First In, First Out (default)
+  ///
+  /// Tasks are executed in the order they were added to the queue.
+  /// This provides fair execution for all tasks.
   fifo,
 
   /// Last In, First Out (stack-like behavior)
+  ///
+  /// The most recently added task executes first. Useful for
+  /// cache-like scenarios where newer data is more important.
   lifo,
 
   /// Priority-based execution
+  ///
+  /// Tasks with higher priority values execute first. When priorities
+  /// are equal, tasks execute in FIFO order.
   priority,
+
+  /// Alternating between head and tail
+  ///
+  /// Alternates between taking tasks from the front and back of the queue.
+  /// Provides fair scheduling for both ends of the queue.
+  ///
+  /// Example:
+  /// ```dart
+  /// final limit = fLimit(1, queueStrategy: QueueStrategy.alternating);
+  /// for (int i = 0; i < 5; i++) {
+  ///   limit(() async => print(i));
+  /// }
+  /// // Output order: 0, 4, 1, 3, 2
+  /// ```
+  alternating,
+
+  /// Random selection from queue
+  ///
+  /// Selects a random task from the queue each time a slot becomes available.
+  /// Useful for load balancing and fair distribution across all queued tasks.
+  ///
+  /// Example:
+  /// ```dart
+  /// final limit = fLimit(1, queueStrategy: QueueStrategy.random);
+  /// for (int i = 0; i < 5; i++) {
+  ///   limit(() async => print(i));
+  /// }
+  /// // Output order: random (e.g., 3, 1, 4, 0, 2)
+  /// ```
+  random,
 }
 
 /// Options for creating a limited function
+///
+/// Used with [limitFunction] to configure concurrency limits and queue strategy.
+///
+/// Example:
+/// ```dart
+/// final options = LimitOptions(
+///   concurrency: 2,
+///   queueStrategy: QueueStrategy.priority,
+/// );
+/// final limited = limitFunction(myFunction, options);
+/// ```
 class LimitOptions {
+  /// Maximum number of concurrent operations
   final int concurrency;
+
+  /// Queue execution strategy
   final QueueStrategy queueStrategy;
 
+  /// Creates options for limiting function concurrency
+  ///
+  /// [concurrency] must be >= 1
+  /// [queueStrategy] defaults to [QueueStrategy.fifo]
   const LimitOptions({
     required this.concurrency,
     this.queueStrategy = QueueStrategy.fifo,
@@ -28,6 +99,8 @@ class LimitOptions {
 }
 
 /// Task wrapper with priority support
+///
+/// Internal class used to wrap queued tasks with metadata.
 class _TaskWrapper {
   final Completer<void> completer;
   final int priority;
@@ -41,6 +114,8 @@ class _TaskWrapper {
 }
 
 /// Abstract queue implementation
+///
+/// Internal interface for different queue strategies.
 abstract class _TaskQueue {
   int get length;
   bool get isEmpty;
@@ -198,13 +273,108 @@ class _PriorityQueue implements _TaskQueue {
   }
 }
 
+/// Alternating queue implementation (head, tail, head, tail, ...)
+class _AlternatingQueue implements _TaskQueue {
+  final Queue<_TaskWrapper> _queue = Queue<_TaskWrapper>();
+  bool _takeFromHead = true;
+
+  @override
+  int get length => _queue.length;
+
+  @override
+  bool get isEmpty => _queue.isEmpty;
+
+  @override
+  bool get isNotEmpty => _queue.isNotEmpty;
+
+  @override
+  void add(_TaskWrapper task) {
+    _queue.add(task);
+  }
+
+  @override
+  _TaskWrapper removeNext() {
+    final task = _takeFromHead ? _queue.removeFirst() : _queue.removeLast();
+    _takeFromHead = !_takeFromHead;
+    return task;
+  }
+
+  @override
+  void clear() {
+    _queue.clear();
+  }
+}
+
+/// Random queue implementation (random selection from any position)
+class _RandomQueue implements _TaskQueue {
+  final List<_TaskWrapper> _list = [];
+  final Random _random = Random();
+
+  @override
+  int get length => _list.length;
+
+  @override
+  bool get isEmpty => _list.isEmpty;
+
+  @override
+  bool get isNotEmpty => _list.isNotEmpty;
+
+  @override
+  void add(_TaskWrapper task) {
+    _list.add(task);
+  }
+
+  @override
+  _TaskWrapper removeNext() {
+    if (_list.isEmpty) {
+      throw StateError('Queue is empty');
+    }
+    final index = _random.nextInt(_list.length);
+    return _list.removeAt(index);
+  }
+
+  @override
+  void clear() {
+    _list.clear();
+  }
+}
+
 /// A concurrency limiter that controls how many async operations can run simultaneously
+///
+/// Example:
+/// ```dart
+/// final limit = fLimit(2); // Max 2 concurrent operations
+///
+/// // Execute with limit
+/// final result = await limit(() async {
+///   return fetchData();
+/// });
+///
+/// // With priority (when using priority strategy)
+/// final limit = fLimit(1, queueStrategy: QueueStrategy.priority);
+/// limit(() async => print('low'), priority: 1);
+/// limit(() async => print('high'), priority: 10);
+/// ```
 class FLimit {
   int _concurrency;
   final _TaskQueue _queue;
   final QueueStrategy _queueStrategy;
   int _activeCount = 0;
 
+  /// Creates a concurrency limiter
+  ///
+  /// [concurrency] must be >= 1 and determines the maximum number of
+  /// concurrent operations.
+  ///
+  /// [queueStrategy] determines how queued tasks are executed when slots
+  /// become available. Defaults to [QueueStrategy.fifo].
+  ///
+  /// Throws [ArgumentError] if concurrency is less than 1 or infinite.
+  ///
+  /// Example:
+  /// ```dart
+  /// final limit = FLimit(2, queueStrategy: QueueStrategy.priority);
+  /// ```
   FLimit(int concurrency, {QueueStrategy queueStrategy = QueueStrategy.fifo})
       : _concurrency = concurrency,
         _queueStrategy = queueStrategy,
@@ -220,22 +390,51 @@ class FLimit {
         return _LifoQueue();
       case QueueStrategy.priority:
         return _PriorityQueue();
+      case QueueStrategy.alternating:
+        return _AlternatingQueue();
+      case QueueStrategy.random:
+        return _RandomQueue();
     }
   }
 
   /// Current number of active operations
+  ///
+  /// Returns the number of operations currently being executed.
   int get activeCount => _activeCount;
 
   /// Current number of pending operations in the queue
+  ///
+  /// Returns the number of operations waiting for a slot to become available.
   int get pendingCount => _queue.length;
 
   /// Current concurrency limit
+  ///
+  /// Can be changed at runtime to increase or decrease the limit.
+  ///
+  /// Example:
+  /// ```dart
+  /// final limit = fLimit(2);
+  /// limit.concurrency = 5; // Increase to 5
+  /// ```
   int get concurrency => _concurrency;
 
   /// Current queue strategy
+  ///
+  /// Returns the strategy that was set when creating the limiter.
   QueueStrategy get queueStrategy => _queueStrategy;
 
   /// Set new concurrency limit
+  ///
+  /// Can be changed at runtime. Increasing the limit will immediately
+  /// start processing queued tasks if slots are available.
+  ///
+  /// Throws [ArgumentError] if value is less than 1 or infinite.
+  ///
+  /// Example:
+  /// ```dart
+  /// final limit = fLimit(1);
+  /// limit.concurrency = 10; // Scale up
+  /// ```
   set concurrency(int newConcurrency) {
     _validateConcurrency(newConcurrency);
     _concurrency = newConcurrency;
@@ -249,11 +448,40 @@ class FLimit {
   }
 
   /// Clear all pending operations from the queue
+  ///
+  /// Removes all queued tasks without executing them. Active operations
+  /// are not affected.
+  ///
+  /// Example:
+  /// ```dart
+  /// final limit = fLimit(1);
+  /// // Add 100 tasks...
+  /// limit.clearQueue(); // Cancel all pending
+  /// print(limit.pendingCount); // 0
+  /// ```
   void clearQueue() {
     _queue.clear();
   }
 
   /// Execute a function with concurrency limit
+  ///
+  /// If the concurrency limit has not been reached, the function executes
+  /// immediately. Otherwise, it is queued according to the [queueStrategy].
+  ///
+  /// [priority] is used when [queueStrategy] is [QueueStrategy.priority].
+  /// Higher values execute first. Defaults to 0.
+  ///
+  /// Returns a Future that completes with the result of [function].
+  ///
+  /// Example:
+  /// ```dart
+  /// final result = await limit(() async {
+  ///   return fetchData();
+  /// });
+  ///
+  /// // With priority
+  /// await limit(() async => criticalTask(), priority: 10);
+  /// ```
   Future<T> call<T>(Future<T> Function() function, {int priority = 0}) {
     final completer = Completer<T>();
 
@@ -324,6 +552,28 @@ class FLimit {
 typedef LimitedFunctionWrapper<T> = Future<T> Function();
 
 /// Create a limited version of a function
+///
+/// Returns a wrapped version of [function] that respects the concurrency
+/// limits specified in [options].
+///
+/// Example:
+/// ```dart
+/// Future<String> fetchData() async {
+///   return await http.get('https://api.example.com');
+/// }
+///
+/// final limitedFetch = limitFunction(
+///   fetchData,
+///   LimitOptions(concurrency: 5),
+/// );
+///
+/// // All calls respect the 5-concurrent limit
+/// final results = await Future.wait([
+///   limitedFetch(),
+///   limitedFetch(),
+///   limitedFetch(),
+/// ]);
+/// ```
 LimitedFunctionWrapper<T> limitFunction<T>(
   Future<T> Function() function,
   LimitOptions options,
@@ -334,6 +584,26 @@ LimitedFunctionWrapper<T> limitFunction<T>(
 }
 
 /// Create a concurrency limiter
+///
+/// Convenience function that creates an [FLimit] instance.
+///
+/// [concurrency] must be >= 1.
+/// [queueStrategy] determines task execution order. Defaults to [QueueStrategy.fifo].
+///
+/// Example:
+/// ```dart
+/// final limit = fLimit(2);
+///
+/// await limit(() async {
+///   print('Running with concurrency limit');
+/// });
+///
+/// // With custom strategy
+/// final priority = fLimit(1, queueStrategy: QueueStrategy.priority);
+/// priority(() async => taskA(), priority: 10);
+/// priority(() async => taskB(), priority: 1);
+/// // taskA runs first
+/// ```
 FLimit fLimit(int concurrency,
     {QueueStrategy queueStrategy = QueueStrategy.fifo}) {
   return FLimit(concurrency, queueStrategy: queueStrategy);

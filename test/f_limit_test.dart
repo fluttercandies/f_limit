@@ -288,14 +288,71 @@ void main() {
       expect(executionOrder, equals(['blocking', 'A', 'A', 'B']));
     });
 
+    test('Alternating strategy should execute tasks from head and tail alternately',
+        () async {
+      final executionOrder = <int>[];
+
+      // Create all task functions first (don't execute yet)
+      final tasks = List.generate(
+          5,
+          (i) => () async {
+                executionOrder.add(i);
+                await Future.delayed(Duration(milliseconds: 5));
+              });
+
+      // Use concurrency of 1 and alternating strategy
+      final limit = fLimit(1, queueStrategy: QueueStrategy.alternating);
+
+      // Queue all tasks quickly without waiting
+      final futures = tasks.map((task) => limit(task)).toList();
+
+      await Future.wait(futures);
+
+      // Queue: [0, 1, 2, 3, 4]
+      // Alternating: head(0), tail(4), head(1), tail(3), head(2)
+      expect(executionOrder, equals([0, 4, 1, 3, 2]));
+    });
+
+    test('Random strategy should execute tasks in random order', () async {
+      final executionOrder = <int>[];
+
+      // Create all task functions first (don't execute yet)
+      final tasks = List.generate(
+          10,
+          (i) => () async {
+                executionOrder.add(i);
+                await Future.delayed(Duration(milliseconds: 2));
+              });
+
+      // Use concurrency of 1 and random strategy
+      final limit = fLimit(1, queueStrategy: QueueStrategy.random);
+
+      // Queue all tasks quickly without waiting
+      final futures = tasks.map((task) => limit(task)).toList();
+
+      await Future.wait(futures);
+
+      // All tasks should be executed
+      expect(executionOrder, hasLength(10));
+      expect(executionOrder.toSet(), equals({0, 1, 2, 3, 4, 5, 6, 7, 8, 9}));
+
+      // Random order should NOT be sequential (very unlikely to be 0,1,2,3,4,5,6,7,8,9)
+      expect(executionOrder, isNot(equals([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])));
+    });
+
     test('should track queue strategy', () {
       final fifoLimit = fLimit(2, queueStrategy: QueueStrategy.fifo);
       final lifoLimit = fLimit(2, queueStrategy: QueueStrategy.lifo);
       final priorityLimit = fLimit(2, queueStrategy: QueueStrategy.priority);
+      final alternatingLimit =
+          fLimit(2, queueStrategy: QueueStrategy.alternating);
+      final randomLimit = fLimit(2, queueStrategy: QueueStrategy.random);
 
       expect(fifoLimit.queueStrategy, equals(QueueStrategy.fifo));
       expect(lifoLimit.queueStrategy, equals(QueueStrategy.lifo));
       expect(priorityLimit.queueStrategy, equals(QueueStrategy.priority));
+      expect(alternatingLimit.queueStrategy, equals(QueueStrategy.alternating));
+      expect(randomLimit.queueStrategy, equals(QueueStrategy.random));
     });
   });
 }
