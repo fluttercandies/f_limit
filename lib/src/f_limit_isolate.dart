@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:isolate';
 
 import 'f_limit_base.dart';
+import 'retry.dart';
 
 /// Extension on [FLimit] to support running tasks in a separate isolate
 ///
@@ -33,42 +34,51 @@ extension FLimitIsolate on FLimit {
   /// thread, while still respecting the concurrency limit.
   ///
   /// The [computation] function must be a top-level function, a static method,
-  /// or a closure that doesn't capture any non-sendable state from the current
-  /// isolate (e.g., no closures, no non-sendable objects).
+  /// or a closure that captures only sendable state from the current isolate.
   ///
   /// [priority] can be used to set the priority of the task if the queue strategy
   /// supports it. Higher values execute first. Defaults to 0.
   ///
-  /// Returns a Future that completes with the result of [computation].
+  /// [timeout] if specified, the task will fail with [TimeoutException]
+  /// if it doesn't complete within the given duration.
+  /// This is an alias for [timeouts].run.
+  ///
+  /// [timeouts] provides queue/run/total timeout control. If [timeouts].run is
+  /// specified, do not also pass [timeout].
+  ///
+  /// [retry] if specified, failed tasks will be retried according to the policy.
+  /// Note: Retry with isolate may have limited usefulness since the computation
+  /// runs in a separate isolate and errors may not be easily recoverable.
+  ///
+  /// Returns a [TaskHandle] that can be used to cancel the task or await the result.
   ///
   /// Example:
   /// ```dart
-  /// final limit = fLimit(2);
+  /// int calculateSquare(int n) => n * n;
   ///
-  /// // Simple computation
-  /// final sum = await limit.isolate(() {
-  ///   int total = 0;
-  ///   for (int i = 0; i < 1000000; i++) {
-  ///     total += i;
-  ///   }
-  ///   return total;
-  /// });
+  /// void main() async {
+  ///   final limit = fLimit(2);
   ///
-  /// // With priority
-  /// await limit.isolate(() {
-  ///   return heavyComputation();
-  /// }, priority: 10);
-  ///
-  /// // Using a static function
-  /// static int calculate(int n) {
-  ///   return n * n;
+  ///   final result = await limit.isolate(() => calculateSquare(42));
+  ///   print(result);
   /// }
-  /// await limit.isolate(() => calculate(42));
   /// ```
   ///
   /// See also:
   /// - [Isolate.run] for more information about isolate constraints
-  Future<T> isolate<T>(FutureOr<T> Function() computation, {int priority = 0}) {
-    return this(() => Isolate.run(computation), priority: priority);
+  TaskHandle<T> isolate<T>(
+    FutureOr<T> Function() computation, {
+    int priority = 0,
+    Duration? timeout,
+    TaskTimeouts? timeouts,
+    RetryPolicy? retry,
+  }) {
+    return this(
+      () => Isolate.run(computation),
+      priority: priority,
+      timeout: timeout,
+      timeouts: timeouts,
+      retry: retry,
+    );
   }
 }

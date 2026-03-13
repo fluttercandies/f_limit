@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'f_limit_base.dart';
+import 'retry.dart';
 
 /// Extension methods for [FLimit]
 ///
-/// Provides additional functionality like concurrent mapping and idle detection.
+/// Provides additional functionality like concurrent mapping, filtering,
+/// iteration, and idle detection.
 ///
 /// Example:
 /// ```dart
@@ -38,49 +40,242 @@ extension FLimitExtensions on FLimit {
   /// ```
   Future<List<Result>> map<Item, Result>(
     Iterable<Item> items,
-    Future<Result> Function(Item item) mapper,
-  ) {
-    var futures = <Future<Result>>[];
-    for (var item in items) {
-      futures.add(this(() => mapper(item)));
-    }
+    Future<Result> Function(Item item) mapper, {
+    int priority = 0,
+    Duration? timeout,
+    RetryPolicy? retry,
+    TaskTimeouts? timeouts,
+  }) {
+    final futures = items.map((item) {
+      return this(
+        () => mapper(item),
+        priority: priority,
+        timeout: timeout,
+        retry: retry,
+        timeouts: timeouts,
+      ).future;
+    }).toList();
     return Future.wait(futures);
   }
 
-  /// Returns a Future that completes when the queue is empty and active count is 0.
+  /// Maps [items] and captures both successes and failures without throwing.
+  Future<List<SettledResult<Result>>> mapSettled<Item, Result>(
+    Iterable<Item> items,
+    Future<Result> Function(Item item) mapper, {
+    int priority = 0,
+    Duration? timeout,
+    RetryPolicy? retry,
+    TaskTimeouts? timeouts,
+  }) {
+    final handles = items.map((item) {
+      return this(
+        () => mapper(item),
+        priority: priority,
+        timeout: timeout,
+        retry: retry,
+        timeouts: timeouts,
+      );
+    }).toList();
+
+    return Future.wait(handles.map((handle) async {
+      try {
+        return SettledResult<Result>.success(await handle);
+      } catch (error, stackTrace) {
+        final status = error is CanceledException
+            ? TaskStatus.canceled
+            : TaskStatus.failed;
+        return SettledResult<Result>.failure(
+          error,
+          stackTrace,
+          status: status,
+        );
+      }
+    }));
+  }
+
+  /// Executes [action] for each item in [items] concurrently with the concurrency limit.
   ///
-  /// Useful for waiting for all pending tasks to complete before proceeding.
-  ///
-  /// If the limiter is already idle, returns a completed Future immediately.
+  /// Unlike [map], this method doesn't collect results and is useful for
+  /// side-effect operations.
   ///
   /// Example:
   /// ```dart
   /// final limit = fLimit(2);
+  /// final items = [1, 2, 3, 4, 5];
   ///
-  /// // Add tasks...
-  /// for (int i = 0; i < 10; i++) {
-  ///   limit(() async => processItem(i));
-  /// }
-  ///
-  /// // Wait for all to finish
-  /// await limit.onIdle;
-  /// print('All tasks completed!');
+  /// await limit.forEach(items, (item) async {
+  ///   await processItem(item);
+  /// });
   /// ```
-  Future<void> get onIdle {
-    if (activeCount == 0 && pendingCount == 0) {
-      return Future.value();
+  Future<void> forEach<Item>(
+    Iterable<Item> items,
+    Future<void> Function(Item item) action, {
+    int priority = 0,
+    Duration? timeout,
+    RetryPolicy? retry,
+    TaskTimeouts? timeouts,
+  }) {
+    final futures = items.map((item) {
+      return this(
+        () => action(item),
+        priority: priority,
+        timeout: timeout,
+        retry: retry,
+        timeouts: timeouts,
+      ).future;
+    }).toList();
+    return Future.wait(futures);
+  }
+
+  /// Executes [action] for each item and returns settled outcomes.
+  Future<List<SettledResult<void>>> forEachSettled<Item>(
+    Iterable<Item> items,
+    Future<void> Function(Item item) action, {
+    int priority = 0,
+    Duration? timeout,
+    RetryPolicy? retry,
+    TaskTimeouts? timeouts,
+  }) {
+    final handles = items.map((item) {
+      return this(
+        () => action(item),
+        priority: priority,
+        timeout: timeout,
+        retry: retry,
+        timeouts: timeouts,
+      );
+    }).toList();
+
+    return Future.wait(handles.map((handle) async {
+      try {
+        await handle;
+        return const SettledResult<void>.success(null);
+      } catch (error, stackTrace) {
+        final status = error is CanceledException
+            ? TaskStatus.canceled
+            : TaskStatus.failed;
+        return SettledResult<void>.failure(
+          error,
+          stackTrace,
+          status: status,
+        );
+      }
+    }));
+  }
+
+  /// Filters [items] concurrently using the [predicate] function.
+  ///
+  /// Returns a Future that completes with a list of items for which
+  /// [predicate] returned `true`. The order is preserved.
+  ///
+  /// Example:
+  /// ```dart
+  /// final limit = fLimit(2);
+  /// final items = [1, 2, 3, 4, 5];
+  ///
+  /// final evens = await limit.filter(items, (item) async {
+  ///   return item % 2 == 0;
+  /// });
+  /// // evens = [2, 4]
+  /// ```
+  Future<List<Item>> filter<Item>(
+    Iterable<Item> items,
+    Future<bool> Function(Item item) predicate, {
+    int priority = 0,
+    Duration? timeout,
+    RetryPolicy? retry,
+    TaskTimeouts? timeouts,
+  }) async {
+    final itemList = items.toList();
+    final results = await Future.wait(
+      itemList.map((item) {
+        return this(
+          () => predicate(item),
+          priority: priority,
+          timeout: timeout,
+          retry: retry,
+          timeouts: timeouts,
+        ).future;
+      }),
+    );
+
+    return [
+      for (var i = 0; i < itemList.length; i++)
+        if (results[i]) itemList[i]
+    ];
+  }
+
+  /// Executes tasks and collects results with their indices.
+  ///
+  /// Useful when you need to know which result corresponds to which input.
+  ///
+  /// Example:
+  /// ```dart
+  /// final limit = fLimit(2);
+  /// final items = ['a', 'b', 'c'];
+  ///
+  /// final results = await limit.mapIndexed(items, (index, item) async {
+  ///   return '$index:$item';
+  /// });
+  /// // results = ['0:a', '1:b', '2:c']
+  /// ```
+  Future<List<Result>> mapIndexed<Item, Result>(
+    Iterable<Item> items,
+    Future<Result> Function(int index, Item item) mapper, {
+    int priority = 0,
+    Duration? timeout,
+    RetryPolicy? retry,
+    TaskTimeouts? timeouts,
+  }) {
+    final itemList = items.toList();
+    final futures = itemList.asMap().entries.map((entry) {
+      return this(
+        () => mapper(entry.key, entry.value),
+        priority: priority,
+        timeout: timeout,
+        retry: retry,
+        timeouts: timeouts,
+      ).future;
+    }).toList();
+    return Future.wait(futures);
+  }
+
+  /// Reduces [items] to a single value using [combine] function.
+  ///
+  /// Items are processed in order, but the reduction happens sequentially
+  /// after all items are processed.
+  ///
+  /// Example:
+  /// ```dart
+  /// final limit = fLimit(2);
+  /// final items = [1, 2, 3, 4, 5];
+  ///
+  /// final sum = await limit.reduce(items, (a, b) async => a + b);
+  /// // sum = 15
+  /// ```
+  Future<Item> reduce<Item>(
+    Iterable<Item> items,
+    Future<Item> Function(Item a, Item b) combine, {
+    int priority = 0,
+    Duration? timeout,
+    RetryPolicy? retry,
+    TaskTimeouts? timeouts,
+  }) async {
+    final itemList = items.toList();
+    if (itemList.isEmpty) {
+      throw StateError('No element');
     }
 
-    final completer = Completer<void>();
-
-    // Poll until idle
-    Timer.periodic(Duration(milliseconds: 10), (timer) {
-      if (activeCount == 0 && pendingCount == 0) {
-        timer.cancel();
-        completer.complete();
-      }
-    });
-
-    return completer.future;
+    var accumulator = itemList.first;
+    for (var i = 1; i < itemList.length; i++) {
+      accumulator = await this(
+        () => combine(accumulator, itemList[i]),
+        priority: priority,
+        timeout: timeout,
+        retry: retry,
+        timeouts: timeouts,
+      ).future;
+    }
+    return accumulator;
   }
 }
